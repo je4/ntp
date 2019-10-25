@@ -15,13 +15,13 @@ If all you care about is the current time according to a remote NTP server,
 simply use the `Time` function:
 ```go
 time, err := ntp.Time(ntp.MakeDefaultHandler(
-                                                         "0.beevik-ntp.pool.ntp.org", // Host
-                                                         "",  // Protocol
-                                                         "",  // Port
-                                                         "",  // LocalAddress
-                                                         0,  // TTL
-                                                         0,  // Timeout
-                                                     ))
+                         "0.beevik-ntp.pool.ntp.org", // Host
+                         "",  // Protocol
+                         "",  // Port
+                         "",  // LocalAddress
+                         0,  // TTL
+                         0,  // Timeout
+                     ))
 ```
 
 
