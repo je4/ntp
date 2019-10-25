@@ -15,13 +15,13 @@ If all you care about is the current time according to a remote NTP server,
 simply use the `Time` function:
 ```go
 time, err := ntp.Time(ntp.MakeDefaultHandler(
-                         "0.beevik-ntp.pool.ntp.org", // Host
-                         "",  // Protocol
-                         "",  // Port
-                         "",  // LocalAddress
-                         0,  // TTL
-                         0,  // Timeout
-                     ))
+         "0.beevik-ntp.pool.ntp.org", // Host
+         "",  // Protocol
+         "",  // Port
+         "",  // LocalAddress
+         0,  // TTL
+         0,  // Timeout
+     ))
 ```
 
 
@@ -31,13 +31,13 @@ To obtain the current time as well as some additional metadata about the time,
 use the [`Query`](https://godoc.org/github.com/beevik/ntp#Query) function:
 ```go
 response, err := ntp.Query(ntp.MakeDefaultHandler(
-                                   "0.beevik-ntp.pool.ntp.org", // Host
-                                   "",  // Protocol
-                                   "",  // Port
-                                   "",  // LocalAddress
-                                   0,  // TTL
-                                   0,  // Timeout
-                               ))
+       "0.beevik-ntp.pool.ntp.org", // Host
+       "",  // Protocol
+       "",  // Port
+       "",  // LocalAddress
+       0,  // TTL
+       0,  // Timeout
+   ))
 time := time.Now().Add(response.ClockOffset)
 ```
 
