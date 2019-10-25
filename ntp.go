@@ -8,17 +8,19 @@
 //
 // This approach grew out of a go-nuts post by Michael Hofmann:
 // https://groups.google.com/forum/?fromgroups#!topic/golang-nuts/FlcdMU5fkLQ
+
+// modified for use of generic network connection handler by Jürgen Enge
+
 package ntp
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"net"
 	"time"
-
-	"golang.org/x/net/ipv4"
 )
 
 // The LeapIndicator is used to warn if a leap second should be inserted
@@ -44,7 +46,6 @@ const (
 	defaultNtpVersion = 4
 	nanoPerSec        = 1000000000
 	maxStratum        = 16
-	defaultTimeout    = 5 * time.Second
 	maxPollInterval   = (1 << 17) * time.Second
 	maxDispersion     = 16 * time.Second
 )
@@ -167,12 +168,7 @@ func (m *msg) getLeap() LeapIndicator {
 // QueryOptions contains the list of configurable options that may be used
 // with the QueryWithOptions function.
 type QueryOptions struct {
-	Timeout      time.Duration // defaults to 5 seconds
 	Version      int           // NTP protocol version, defaults to 4
-	LocalAddress string        // IP address to use for the client address
-	Port         int           // Server port, defaults to 123
-	TTL          int           // IP TTL to use, defaults to system default
-	Protocol     string        // Protocol to use, defaults to udp
 }
 
 // A Response contains time data, some of which is returned by the NTP server
@@ -289,14 +285,14 @@ func (r *Response) Validate() error {
 // Query returns a response from the remote NTP server host. It contains
 // the time at which the server transmitted the response as well as other
 // useful information about the time and the remote server.
-func Query(host string) (*Response, error) {
-	return QueryWithOptions(host, QueryOptions{})
+func Query(rawFunc func(data []byte) ([]byte, error)) (*Response, error) {
+	return QueryWithOptions(rawFunc, QueryOptions{})
 }
 
 // QueryWithOptions performs the same function as Query but allows for the
 // customization of several query options.
-func QueryWithOptions(host string, opt QueryOptions) (*Response, error) {
-	m, now, err := getTime(host, opt)
+func QueryWithOptions(rawFunc func(data []byte) ([]byte, error), opt QueryOptions) (*Response, error) {
+	m, now, err := getTime(rawFunc, opt)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +303,8 @@ func QueryWithOptions(host string, opt QueryOptions) (*Response, error) {
 // On error, it returns the local system time. The version may be 2, 3, or 4.
 //
 // Deprecated: TimeV is deprecated. Use QueryWithOptions instead.
-func TimeV(host string, version int) (time.Time, error) {
-	m, recvTime, err := getTime(host, QueryOptions{Version: version})
+func TimeV(rawFunc func(data []byte) ([]byte, error), version int) (time.Time, error) {
+	m, recvTime, err := getTime(rawFunc, QueryOptions{Version: version})
 	if err != nil {
 		return time.Now(), err
 	}
@@ -326,13 +322,14 @@ func TimeV(host string, version int) (time.Time, error) {
 // Time returns the current time using information from a remote NTP server.
 // It uses version 4 of the NTP protocol. On error, it returns the local
 // system time.
-func Time(host string) (time.Time, error) {
-	return TimeV(host, defaultNtpVersion)
+func Time(rawFunc func(data []byte) ([]byte, error)) (time.Time, error) {
+	return TimeV(rawFunc, defaultNtpVersion)
 }
 
 // getTime performs the NTP server query and returns the response message
 // along with the local system time it was received.
-func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
+func getTime(rawFunc func(data []byte) ([]byte, error), opt QueryOptions) (*msg, ntpTime, error) {
+
 	if opt.Version == 0 {
 		opt.Version = defaultNtpVersion
 	}
@@ -340,51 +337,6 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 		return nil, 0, errors.New("invalid protocol version requested")
 	}
 
-	if opt.Protocol == "" {
-		opt.Protocol = "udp"
-	}
-
-	// Resolve the remote NTP server address.
-	raddr, err := net.ResolveUDPAddr(opt.Protocol, net.JoinHostPort(host, "123"))
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// Resolve the local address if specified as an option.
-	var laddr *net.UDPAddr
-	if opt.LocalAddress != "" {
-		laddr, err = net.ResolveUDPAddr(opt.Protocol, net.JoinHostPort(opt.LocalAddress, "0"))
-		if err != nil {
-			return nil, 0, err
-		}
-	}
-
-	// Override the port if requested.
-	if opt.Port != 0 {
-		raddr.Port = opt.Port
-	}
-
-	// Prepare a "connection" to the remote server.
-	con, err := net.DialUDP(opt.Protocol, laddr, raddr)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer con.Close()
-
-	// Set a TTL for the packet if requested.
-	if opt.TTL != 0 {
-		ipcon := ipv4.NewConn(con)
-		err = ipcon.SetTTL(opt.TTL)
-		if err != nil {
-			return nil, 0, err
-		}
-	}
-
-	// Set a timeout on the connection.
-	if opt.Timeout == 0 {
-		opt.Timeout = defaultTimeout
-	}
-	con.SetDeadline(time.Now().Add(opt.Timeout))
 
 	// Allocate a message to hold the response.
 	recvMsg := new(msg)
@@ -400,7 +352,7 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	// random value, fall back to using the system clock. Keep track of
 	// when the messsage was actually transmitted.
 	bits := make([]byte, 8)
-	_, err = rand.Read(bits)
+	_, err := rand.Read(bits)
 	var xmitTime time.Time
 	if err == nil {
 		xmitMsg.TransmitTime = ntpTime(binary.BigEndian.Uint64(bits))
@@ -410,14 +362,17 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 		xmitMsg.TransmitTime = toNtpTime(xmitTime)
 	}
 
-	// Transmit the query.
-	err = binary.Write(con, binary.BigEndian, xmitMsg)
+	var rawData bytes.Buffer
+	rawWriter := bufio.NewWriter(&rawData)
+	err = binary.Write(rawWriter, binary.BigEndian, xmitMsg)
 	if err != nil {
 		return nil, 0, err
 	}
+	rawWriter.Flush()
 
-	// Receive the response.
-	err = binary.Read(con, binary.BigEndian, recvMsg)
+	recBuf, err := rawFunc(rawData.Bytes())
+	recRead := bytes.NewReader(recBuf)
+	err = binary.Read(recRead, binary.BigEndian, recvMsg)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -576,3 +531,4 @@ func kissCode(id uint32) string {
 	}
 	return string(b)
 }
+
